@@ -2,6 +2,14 @@
 
 Browser-based voice AI agent using Azure Speech and OpenAI.
 
+## Screenshots
+
+### Setup Screen
+![Setup Screen](Screenshot-Setup.png)
+
+### Agent in Action
+![Agent Interface](Screenshot-Agent.png)
+
 ## Prerequisites
 
 - **Docker** (for running locally)
