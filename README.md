@@ -1,4 +1,4 @@
-# Voice AI Agent
+# SecondNatureAgent Agent
 
 Browser-based voice AI agent using Azure Speech and OpenAI.
 

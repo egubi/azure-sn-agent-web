@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple WebSocket test client for the Voice AI Agent backend.
+Simple WebSocket test client for the SecondNatureAgent Agent backend.
 This script connects to the WebSocket endpoint and verifies basic connectivity.
 """
 

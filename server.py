@@ -82,7 +82,7 @@ class AgentState(Enum):
 # ============================================================================
 # FastAPI App
 # ============================================================================
-app = FastAPI(title="Voice AI Agent Backend")
+app = FastAPI(title="SecondNatureAgent Agent Backend")
 
 # Global session state (single session at a time)
 active_websocket: Optional[WebSocket] = None
@@ -559,7 +559,7 @@ async def health_check():
 # ============================================================================
 if __name__ == "__main__":
     print(f"{COLOR_INFO}{'='*80}{COLOR_RESET}")
-    print(f"{COLOR_INFO}Voice AI Agent Backend Server{COLOR_RESET}")
+    print(f"{COLOR_INFO}SecondNatureAgent Agent Backend Server{COLOR_RESET}")
     print(f"{COLOR_INFO}{'='*80}{COLOR_RESET}")
     print(f"{COLOR_INFO}Mode: {'UNATTENDED' if UNATTENDED_MODE else 'INTERACTIVE'}{COLOR_RESET}")
     print(f"{COLOR_INFO}Azure Speech: {'OK' if AZURE_SPEECH_KEY else 'MISSING'}{COLOR_RESET}")

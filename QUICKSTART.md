@@ -1,4 +1,4 @@
-# Technical Documentation — Voice AI Agent
+# Technical Documentation — SecondNatureAgent Agent
 
 ## Architecture Overview
 

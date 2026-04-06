@@ -39,7 +39,7 @@ if [ ! -d "$TERRAFORM_DIR" ]; then
 fi
 
 echo "========================================"
-echo "Voice AI Agent - Environment Setup"
+echo "SecondNatureAgent Agent - Environment Setup"
 echo "========================================"
 echo "Mode: $MODE"
 echo "Terraform dir: $TERRAFORM_DIR"
@@ -92,7 +92,7 @@ echo ""
 
 # Write .env file
 cat > "$ENV_FILE" << EOF
-# Voice AI Agent Backend - Environment Configuration
+# SecondNatureAgent Agent Backend - Environment Configuration
 # Auto-generated from Terraform outputs (mode: $MODE)
 # Generated on: $(date)
 

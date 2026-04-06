@@ -1,6 +1,6 @@
 # Full Mode Deployment Guide
 
-This Terraform configuration deploys the complete Voice AI Agent infrastructure to Azure, including:
+This Terraform configuration deploys the complete SecondNatureAgent Agent infrastructure to Azure, including:
 
 - **Azure AI Services** (Speech Services + OpenAI)
 - **Azure Container Registry (ACR)** for Docker image storage
