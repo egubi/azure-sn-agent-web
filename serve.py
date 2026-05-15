@@ -15,6 +15,14 @@ class MyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         # Add CORS headers to allow WebSocket connection
         self.send_header('Access-Control-Allow-Origin', '*')
         super().end_headers()
+    
+    def do_GET(self):
+        # Suppress favicon requests
+        if self.path == '/favicon.ico':
+            self.send_response(204)  # No Content
+            self.end_headers()
+            return
+        super().do_GET()
 
 if __name__ == "__main__":
     # Change to the directory containing index.html

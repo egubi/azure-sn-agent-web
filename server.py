@@ -16,7 +16,7 @@ import io
 
 import azure.cognitiveservices.speech as speechsdk
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import JSONResponse
 from openai import AzureOpenAI
 import uvicorn
@@ -178,6 +178,18 @@ class VoiceAgentSession:
         )
         speech_config.speech_recognition_language = "en-US"
         
+        # Configure speech recognition sensitivity
+        # Set shorter initial silence timeout (milliseconds before speech starts)
+        speech_config.set_property(
+            speechsdk.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs,
+            "5000"
+        )
+        # Set shorter end silence timeout (milliseconds of silence to finalize)
+        speech_config.set_property(
+            speechsdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs,
+            "500"
+        )
+        
         # Create recognizer
         self.recognizer = speechsdk.SpeechRecognizer(
             speech_config=speech_config,
@@ -250,6 +262,11 @@ class VoiceAgentSession:
     
     def _canceled_callback(self, evt):
         """Handle cancellation/error events."""
+        # EndOfStream is expected when WebSocket disconnects - don't log as error
+        if evt.cancellation_details.reason == speechsdk.CancellationReason.EndOfStream:
+            print(f"{COLOR_INFO}[Azure Speech] Stream ended{COLOR_RESET}")
+            return
+            
         print(f"\n{COLOR_ERROR}[Error] Recognition canceled: {evt.cancellation_details.reason}{COLOR_RESET}")
         if evt.cancellation_details.reason == speechsdk.CancellationReason.Error:
             print(f"{COLOR_ERROR}[Error] Details: {evt.cancellation_details.error_details}{COLOR_RESET}")
@@ -387,11 +404,8 @@ class VoiceAgentSession:
             print(f"{COLOR_ERROR}[TTS Error] {type(e).__name__}: {str(e)}{COLOR_RESET}")
             import traceback
             traceback.print_exc()
-        
-        finally:
-            # Return to listening
+            # On error, return to listening
             self.set_state(AgentState.LISTENING)
-            # Process queued transcripts
             asyncio.run_coroutine_threadsafe(
                 self._process_queued_transcripts(),
                 self.loop
@@ -428,6 +442,12 @@ class VoiceAgentSession:
         """Push audio data to Azure Speech SDK."""
         if self.push_stream and self.running:
             self.push_stream.write(audio_data)
+            # Debug: log occasionally
+            if not hasattr(self, '_audio_chunk_count'):
+                self._audio_chunk_count = 0
+            self._audio_chunk_count += 1
+            if self._audio_chunk_count % 100 == 0:
+                print(f"{COLOR_INFO}[Audio] Pushed {self._audio_chunk_count} chunks (state: {self.get_state().value}){COLOR_RESET}")
     
     async def handle_client_message(self, data):
         """Handle text messages from client."""
@@ -436,15 +456,27 @@ class VoiceAgentSession:
             event = msg.get("event")
             
             if event == "speak_confirm":
-                # Client confirmed - speak the pending response
-                if self.pending_response and self.get_state() == AgentState.READY:
-                    print(f"{COLOR_INFO}[Client] Speak confirmed{COLOR_RESET}")
-                    threading.Thread(
-                        target=self._speak_response,
-                        args=(self.pending_response,),
-                        daemon=True
-                    ).start()
-                    self.pending_response = None
+                # Client confirmed - speak the response (possibly edited)
+                if self.get_state() == AgentState.READY:
+                    # Use edited text if provided, otherwise use pending_response
+                    text_to_speak = msg.get("value")
+                    if not text_to_speak:
+                        text_to_speak = self.pending_response
+                    
+                    if text_to_speak:
+                        was_edited = text_to_speak != self.pending_response
+                        edit_note = " (edited by user)" if was_edited else ""
+                        print(f"{COLOR_INFO}[Client] Speak confirmed{edit_note}{COLOR_RESET}")
+                        if was_edited:
+                            print(f"{COLOR_INFO}[Client] Original: {self.pending_response[:80]}...{COLOR_RESET}")
+                            print(f"{COLOR_INFO}[Client] Edited: {text_to_speak[:80]}...{COLOR_RESET}")
+                        
+                        threading.Thread(
+                            target=self._speak_response,
+                            args=(text_to_speak,),
+                            daemon=True
+                        ).start()
+                        self.pending_response = None
             
             elif event == "set_system_prompt":
                 # Client sent custom system prompt
@@ -458,6 +490,17 @@ class VoiceAgentSession:
                 self.unattended_mode = bool(msg.get("value", False))
                 mode_label = "UNATTENDED" if self.unattended_mode else "INTERACTIVE"
                 print(f"{COLOR_INFO}[Session] Mode set to {mode_label}{COLOR_RESET}")
+            
+            elif event == "playback_complete":
+                # Client finished playing TTS audio - return to listening
+                if self.get_state() == AgentState.SPEAKING:
+                    print(f"{COLOR_INFO}[Client] Playback complete{COLOR_RESET}")
+                    self.set_state(AgentState.LISTENING)
+                    # Process queued transcripts
+                    asyncio.run_coroutine_threadsafe(
+                        self._process_queued_transcripts(),
+                        self.loop
+                    )
             
             else:
                 print(f"{COLOR_WARNING}[Client] Unknown event: {event}{COLOR_RESET}")
@@ -529,7 +572,11 @@ async def websocket_endpoint(websocket: WebSocket):
         print(f"{COLOR_INFO}[WebSocket] Client disconnected{COLOR_RESET}")
     
     except Exception as e:
-        print(f"{COLOR_ERROR}[WebSocket Error] {e}{COLOR_RESET}")
+        # Suppress "Cannot call receive after disconnect" errors - they're expected during cleanup
+        if "receive" not in str(e).lower() or "disconnect" not in str(e).lower():
+            print(f"{COLOR_ERROR}[WebSocket Error] {e}{COLOR_RESET}")
+        else:
+            print(f"{COLOR_INFO}[WebSocket] Connection cleanup{COLOR_RESET}")
     
     finally:
         # Cleanup
@@ -544,7 +591,7 @@ async def websocket_endpoint(websocket: WebSocket):
 # ============================================================================
 # Health Check
 # ============================================================================
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 async def health_check():
     return JSONResponse(content={
         "status": "ok",

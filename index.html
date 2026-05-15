@@ -228,6 +228,24 @@
             color: #6b7280;
             font-style: italic;
         }
+        
+        .message-text.editable {
+            background: #2a2a2a;
+            border: 2px solid #3b82f6;
+            cursor: text;
+            outline: none;
+        }
+        
+        .message-text.editable:focus {
+            border-color: #60a5fa;
+        }
+        
+        .edit-hint {
+            font-size: 11px;
+            color: #60a5fa;
+            margin-top: 4px;
+            font-style: italic;
+        }
 
         /* Controls */
         .controls {
@@ -678,6 +696,10 @@
 
         // Current interim transcript
         let currentInterimElement = null;
+        
+        // Current LLM response element (for editing)
+        let currentLLMResponseElement = null;
+        let isUnattendedMode = false;
 
         // ============================================================================
         // System Prompt Composer
@@ -1018,7 +1040,10 @@
             setupScreen.classList.add('hidden');
             mainUI.classList.add('active');
             
-            // Initialize audio with selected devices
+            // Connect WebSocket FIRST and wait for initial state
+            await connectWebSocketAndWaitForState();
+
+            // THEN initialize audio with selected devices
             try {
                 await setupAudio();
                 console.log('[Init] Audio setup complete');
@@ -1027,9 +1052,6 @@
                 showError('Audio setup failed. Please try again.');
                 return;
             }
-
-            // Connect WebSocket
-            connectWebSocket();
 
             // Setup main UI event listeners
             setupEventListeners();
@@ -1131,8 +1153,15 @@
                 workletNode = new AudioWorkletNode(audioContext, 'pcm-processor');
                 
                 workletNode.port.onmessage = (event) => {
-                    if (!isMuted && ws && ws.readyState === WebSocket.OPEN) {
+                    // Only send audio during LISTENING state
+                    if (!isMuted && currentState === 'LISTENING' && ws && ws.readyState === WebSocket.OPEN) {
                         ws.send(event.data);
+                    } else if (!isMuted && currentState !== 'LISTENING' && ws && ws.readyState === WebSocket.OPEN) {
+                        // Debug: log when audio is blocked
+                        if (!window._audioBlockedLogged || Date.now() - window._audioBlockedLogged > 2000) {
+                            console.log(`[Audio] Blocking audio - state is ${currentState}, not LISTENING`);
+                            window._audioBlockedLogged = Date.now();
+                        }
                     }
                 };
 
@@ -1151,7 +1180,8 @@
             scriptProcessor = audioContext.createScriptProcessor(bufferSize, 1, 1);
             
             scriptProcessor.onaudioprocess = (event) => {
-                if (!isMuted && ws && ws.readyState === WebSocket.OPEN) {
+                // Only send audio during LISTENING state
+                if (!isMuted && currentState === 'LISTENING' && ws && ws.readyState === WebSocket.OPEN) {
                     const samples = event.inputBuffer.getChannelData(0);
                     
                     // Convert Float32 to Int16
@@ -1174,6 +1204,78 @@
         // ============================================================================
         // WebSocket Connection
         // ============================================================================
+        function connectWebSocketAndWaitForState() {
+            return new Promise((resolve, reject) => {
+                console.log('[WebSocket] Connecting and waiting for initial state...');
+                
+                ws = new WebSocket('ws://localhost:8000/ws');
+                ws.binaryType = 'arraybuffer';
+
+                let stateReceived = false;
+
+                ws.onopen = () => {
+                    console.log('[WebSocket] Connected');
+                    updateConnectionStatus(true);
+                    reconnectAttempts = 0;
+                    hideError();
+                    
+                    // Send system prompt if configured
+                    if (systemPromptText) {
+                        console.log('[WebSocket] Sending system prompt...');
+                        ws.send(JSON.stringify({
+                            event: 'set_system_prompt',
+                            value: systemPromptText
+                        }));
+                    }
+                    
+                    // Send unattended mode setting
+                    isUnattendedMode = document.getElementById('unattendedCheckbox').checked;
+                    console.log('[WebSocket] Sending unattended mode:', isUnattendedMode);
+                    ws.send(JSON.stringify({
+                        event: 'set_unattended',
+                        value: isUnattendedMode
+                    }));
+                };
+
+                ws.onmessage = async (event) => {
+                    if (typeof event.data === 'string') {
+                        // JSON message
+                        const message = JSON.parse(event.data);
+                        handleJsonMessage(message);
+                        
+                        // Resolve promise when initial state is received
+                        if (!stateReceived && message.event === 'state') {
+                            stateReceived = true;
+                            console.log('[WebSocket] Initial state received, ready for audio');
+                            resolve();
+                        }
+                    } else {
+                        // Binary message (TTS audio)
+                        console.log(`[WebSocket] Received ${event.data.byteLength} bytes of audio`);
+                        await playAudio(event.data);
+                    }
+                };
+
+                ws.onerror = (error) => {
+                    console.error('[WebSocket] Error:', error);
+                    reject(error);
+                };
+
+                ws.onclose = () => {
+                    console.log('[WebSocket] Connection closed');
+                    updateConnectionStatus(false);
+                    attemptReconnect();
+                };
+                
+                // Timeout after 5 seconds
+                setTimeout(() => {
+                    if (!stateReceived) {
+                        reject(new Error('Timeout waiting for initial state'));
+                    }
+                }, 5000);
+            });
+        }
+        
         function connectWebSocket() {
             console.log('[WebSocket] Connecting to ws://localhost:8000/ws...');
             
@@ -1196,11 +1298,11 @@
                 }
                 
                 // Send unattended mode setting
-                const unattendedMode = document.getElementById('unattendedCheckbox').checked;
-                console.log('[WebSocket] Sending unattended mode:', unattendedMode);
+                isUnattendedMode = document.getElementById('unattendedCheckbox').checked;
+                console.log('[WebSocket] Sending unattended mode:', isUnattendedMode);
                 ws.send(JSON.stringify({
                     event: 'set_unattended',
-                    value: unattendedMode
+                    value: isUnattendedMode
                 }));
             };
 
@@ -1293,10 +1395,22 @@
                 audio.onended = () => {
                     URL.revokeObjectURL(url);
                     console.log('[Audio] TTS playback complete');
+                    
+                    // Notify backend that playback is complete
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ event: 'playback_complete' }));
+                        console.log('[WebSocket] Sent playback_complete');
+                    }
                 };
                 
             } catch (err) {
                 console.error('[Audio] Failed to play audio:', err);
+                
+                // Notify backend of playback failure
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ event: 'playback_complete' }));
+                    console.log('[WebSocket] Sent playback_complete (after error)');
+                }
             }
         }
 
@@ -1316,6 +1430,7 @@
         function updateState(state) {
             console.log(`[State] ${currentState} → ${state}`);
             currentState = state;
+            console.log(`[State] currentState is now: "${currentState}"`);
 
             // Update pill appearance
             statePill.textContent = state;
@@ -1324,8 +1439,19 @@
             // Show/hide speak button
             if (state === 'READY') {
                 speakButtonContainer.style.display = 'block';
+                
+                // Make LLM response editable in interactive mode
+                if (!isUnattendedMode && currentLLMResponseElement) {
+                    makeResponseEditable();
+                }
             } else {
                 speakButtonContainer.style.display = 'none';
+                
+                // Remove editable state when leaving READY
+                if (currentLLMResponseElement) {
+                    currentLLMResponseElement.contentEditable = 'false';
+                    currentLLMResponseElement.classList.remove('editable');
+                }
             }
         }
 
@@ -1391,9 +1517,29 @@
             
             messageDiv.appendChild(label);
             messageDiv.appendChild(textDiv);
-            conversationLog.appendChild(messageDiv);
             
+            // Store reference to this LLM response element
+            currentLLMResponseElement = textDiv;
+            
+            conversationLog.appendChild(messageDiv);
             scrollToBottom();
+        }
+        
+        function makeResponseEditable() {
+            if (!currentLLMResponseElement) return;
+            
+            currentLLMResponseElement.contentEditable = 'true';
+            currentLLMResponseElement.classList.add('editable');
+            
+            // Add edit hint if not already present
+            if (!currentLLMResponseElement.nextElementSibling?.classList.contains('edit-hint')) {
+                const hint = document.createElement('div');
+                hint.className = 'edit-hint';
+                hint.textContent = '✏️ Click to edit this response before speaking';
+                currentLLMResponseElement.parentElement.appendChild(hint);
+            }
+            
+            console.log('[UI] LLM response is now editable');
         }
 
         function scrollToBottom() {
@@ -1439,8 +1585,24 @@
 
         function sendSpeakConfirm() {
             if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ event: 'speak_confirm' }));
-                console.log('[WebSocket] Sent speak_confirm');
+                // Get the (possibly edited) text from the current LLM response element
+                const textToSpeak = currentLLMResponseElement 
+                    ? currentLLMResponseElement.textContent.trim()
+                    : null;
+                
+                ws.send(JSON.stringify({ 
+                    event: 'speak_confirm',
+                    value: textToSpeak
+                }));
+                console.log('[WebSocket] Sent speak_confirm with text:', textToSpeak?.substring(0, 50) + '...');
+                
+                // Remove editable state and hint
+                if (currentLLMResponseElement) {
+                    currentLLMResponseElement.contentEditable = 'false';
+                    currentLLMResponseElement.classList.remove('editable');
+                    const hint = currentLLMResponseElement.parentElement.querySelector('.edit-hint');
+                    if (hint) hint.remove();
+                }
             }
         }
 
